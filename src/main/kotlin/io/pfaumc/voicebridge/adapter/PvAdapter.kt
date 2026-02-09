@@ -13,11 +13,10 @@ import su.plo.voice.api.server.PlasmoVoiceServer
 import su.plo.voice.api.server.audio.capture.ServerActivation
 import su.plo.voice.api.server.audio.line.ServerSourceLine
 import su.plo.voice.api.server.audio.source.ServerEntitySource
+import su.plo.voice.api.server.event.audio.capture.PlayerServerActivationEndEvent
+import su.plo.voice.api.server.event.audio.capture.PlayerServerActivationEvent
 import su.plo.voice.api.server.event.connection.UdpClientConnectEvent
 import su.plo.voice.api.server.event.connection.UdpClientDisconnectedEvent
-import su.plo.voice.api.server.player.VoicePlayer
-import su.plo.voice.proto.packets.tcp.serverbound.PlayerAudioEndPacket
-import su.plo.voice.proto.packets.udp.serverbound.PlayerAudioPacket
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.logging.Logger
@@ -85,44 +84,19 @@ class PvAdapter(private val plugin: VoiceBridgePlugin) : AddonInitializer {
             logger.warning("Could not find 'proximity' source line — PV bridge may not work correctly")
         }
 
-        // Hook into the proximity activation to intercept PV player audio
-        setupProximityActivationListener()
+        // Resolve the proximity activation ID for filtering events
+        proximityActivation = voiceServer.activationManager
+            .getActivationByName("proximity")
+            .orElse(null)
+        if (proximityActivation == null) {
+            logger.warning("Proximity activation not found — PV→SVC bridge may not work")
+        }
+
+        logger.info("PV adapter initialized, listening for activation events")
     }
 
     override fun onAddonShutdown() {
         shutdown()
-    }
-
-    /**
-     * Register a listener on PV's proximity activation to intercept audio
-     * from PV players and relay it to SVC players.
-     */
-    private fun setupProximityActivationListener() {
-        val activation = voiceServer.activationManager
-            .getActivationByName("proximity")
-            .orElse(null)
-
-        if (activation == null) {
-            logger.warning("Proximity activation not found — will retry on first audio event")
-            return
-        }
-
-        proximityActivation = activation
-
-        // Register audio interception callback.
-        // Return IGNORED so PV still processes the audio normally for PV clients.
-        // We just additionally relay it to SVC clients.
-        activation.onPlayerActivation { player, packet ->
-            onPvPlayerAudio(player, packet)
-            ServerActivation.Result.IGNORED
-        }
-
-        activation.onPlayerActivationEnd { player, packet ->
-            onPvPlayerAudioEnd(player, packet)
-            ServerActivation.Result.IGNORED
-        }
-
-        logger.info("Proximity activation listener registered")
     }
 
     // --- Event Handlers ---
@@ -157,8 +131,18 @@ class PvAdapter(private val plugin: VoiceBridgePlugin) : AddonInitializer {
     }
 
     // --- Audio Reception from PV Players ---
+    // Uses @EventSubscribe on PlayerServerActivationEvent instead of activation.onPlayerActivation
+    // because PV's default ProximityServerActivationHelper returns HANDLED, which blocks
+    // any subsequently-registered activation listeners from being called.
+    // The event bus fires BEFORE the listener loop, so we're guaranteed to receive audio.
 
-    private fun onPvPlayerAudio(player: VoicePlayer, packet: PlayerAudioPacket) {
+    @EventSubscribe
+    fun onPlayerActivation(event: PlayerServerActivationEvent) {
+        // Only intercept proximity audio
+        if (event.activation != proximityActivation) return
+
+        val player = event.player
+        val packet = event.packet
         val playerUuid = player.instance.uuid
         val distance = packet.distance
         val sequenceNumber = packet.sequenceNumber
@@ -188,8 +172,11 @@ class PvAdapter(private val plugin: VoiceBridgePlugin) : AddonInitializer {
         )
     }
 
-    private fun onPvPlayerAudioEnd(player: VoicePlayer, packet: PlayerAudioEndPacket) {
-        val playerUuid = player.instance.uuid
+    @EventSubscribe
+    fun onPlayerActivationEnd(event: PlayerServerActivationEndEvent) {
+        if (event.activation != proximityActivation) return
+
+        val playerUuid = event.player.instance.uuid
 
         // Notify SVC adapter to flush the channel for this player
         plugin.audioRelay.svcAdapter?.flushChannel(playerUuid)
