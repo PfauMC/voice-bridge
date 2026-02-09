@@ -1,0 +1,19 @@
+name: $name
+version: $version
+main: $main
+api-version: "$apiVersion"
+description: Bridges voice communication between Simple Voice Chat and Plasmo Voice
+load: POSTWORLD
+folia-supported: true
+
+depend:
+  - voicechat
+  - PlasmoVoice
+
+libraries:
+  - org.jetbrains.kotlin:kotlin-stdlib:2.3.0
+
+permissions:
+  voicebridge.admin:
+    description: Allows use of Voice Bridge admin commands
+    default: op
