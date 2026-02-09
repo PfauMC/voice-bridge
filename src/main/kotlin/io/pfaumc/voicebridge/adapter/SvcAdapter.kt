@@ -34,6 +34,8 @@ class SvcAdapter(private val plugin: VoiceBridgePlugin) : VoicechatPlugin {
 
     private var serverApi: VoicechatServerApi? = null
 
+    var pvAdapter: PvAdapter? = null
+
     // EntityAudioChannels for relaying PV player audio to SVC clients.
     // Key: PV player UUID (the "speaker"), Value: channel that SVC clients listen to.
     private val outboundChannels = ConcurrentHashMap<UUID, EntityAudioChannel>()
@@ -80,10 +82,16 @@ class SvcAdapter(private val plugin: VoiceBridgePlugin) : VoicechatPlugin {
         // Register this player as an SVC user
         plugin.sessionManager.register(playerUuid, playerName, ModType.SIMPLE_VOICE_CHAT)
         logger.info("SVC player connected: $playerName")
+
+        // Register a fake UDP connection in PV so PV clients see a voice icon
+        pvAdapter?.registerBridgedConnection(playerUuid)
     }
 
     private fun onPlayerDisconnected(event: PlayerDisconnectedEvent) {
         val playerUuid = event.playerUuid
+
+        // Remove the fake PV connection before unregistering the session
+        pvAdapter?.removeBridgedConnection(playerUuid)
 
         // Remove only the SVC mod type; session is fully removed only when all mod types are gone
         plugin.sessionManager.unregister(playerUuid, ModType.SIMPLE_VOICE_CHAT)
@@ -185,6 +193,15 @@ class SvcAdapter(private val plugin: VoiceBridgePlugin) : VoicechatPlugin {
      */
     fun removeChannel(senderUuid: UUID) {
         outboundChannels.remove(senderUuid)?.flush()
+    }
+
+    /**
+     * Mark a non-SVC player as connected/disconnected in SVC's player state.
+     * This updates the voice icon for SVC clients.
+     * Only works for players without the SVC mod installed (i.e., PV-only players).
+     */
+    fun setExternalPlayerConnected(playerUuid: UUID, connected: Boolean) {
+        serverApi?.getConnectionOf(playerUuid)?.isConnected = connected
     }
 
     fun shutdown() {

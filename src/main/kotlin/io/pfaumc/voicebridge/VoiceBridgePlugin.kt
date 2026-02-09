@@ -66,6 +66,10 @@ class VoiceBridgePlugin : JavaPlugin() {
         audioRelay.svcAdapter = svcAdapter
         audioRelay.pvAdapter = pvAdapter
 
+        // Wire cross-adapter references for connection icon bridging
+        svcAdapter?.pvAdapter = pvAdapter
+        pvAdapter?.svcAdapter = svcAdapter
+
         // Start cleanup coroutine
         scope.launch {
             while (isActive) {
