@@ -1,5 +1,6 @@
 package io.pfaumc.voicebridge.adapter
 
+import io.pfaumc.voicebridge.BridgeMetrics
 import io.pfaumc.voicebridge.VoiceBridgePlugin
 import io.pfaumc.voicebridge.session.ModType
 import org.bukkit.Bukkit
@@ -17,6 +18,7 @@ import su.plo.voice.api.server.event.audio.capture.PlayerServerActivationEndEven
 import su.plo.voice.api.server.event.audio.capture.PlayerServerActivationEvent
 import su.plo.voice.api.server.event.connection.UdpClientConnectEvent
 import su.plo.voice.api.server.event.connection.UdpClientDisconnectedEvent
+import su.plo.voice.api.server.player.VoicePlayer
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.logging.Logger
@@ -107,11 +109,9 @@ class PvAdapter(private val plugin: VoiceBridgePlugin) : AddonInitializer {
         val playerUuid = player.instance.uuid
         val playerName = player.instance.name
 
-        // Only register if not already registered as SVC
-        if (!plugin.sessionManager.isRegistered(playerUuid)) {
-            plugin.sessionManager.register(playerUuid, playerName, ModType.PLASMO_VOICE)
-            logger.info("PV player connected: $playerName")
-        }
+        // Register PV mod type — if already registered as SVC, this adds PV as second mod type
+        plugin.sessionManager.register(playerUuid, playerName, ModType.PLASMO_VOICE)
+        logger.info("PV player connected: $playerName")
     }
 
     @EventSubscribe
@@ -119,15 +119,15 @@ class PvAdapter(private val plugin: VoiceBridgePlugin) : AddonInitializer {
         val player = event.connection.player
         val playerUuid = player.instance.uuid
 
-        // Only remove if this was a PV session
-        val session = plugin.sessionManager.getSession(playerUuid)
-        if (session?.modType == ModType.PLASMO_VOICE) {
-            plugin.sessionManager.unregister(playerUuid)
-        }
+        // Remove only the PV mod type; session is fully removed only when all mod types are gone
+        plugin.sessionManager.unregister(playerUuid, ModType.PLASMO_VOICE)
 
         // Clean up outbound sources
         outboundSources.remove(playerUuid)?.remove()
         sequenceNumbers.remove(playerUuid)
+
+        // Clean up outbound SVC channels for this player
+        plugin.audioRelay.svcAdapter?.removeChannel(playerUuid)
     }
 
     // --- Audio Reception from PV Players ---
@@ -153,6 +153,7 @@ class PvAdapter(private val plugin: VoiceBridgePlugin) : AddonInitializer {
             voiceServer.defaultEncryption.decrypt(packet.data)
         } catch (e: EncryptionException) {
             logger.fine("Failed to decrypt PV audio from ${player.instance.name}: ${e.message}")
+            BridgeMetrics.droppedFrames.incrementAndGet()
             return
         }
 
@@ -203,7 +204,10 @@ class PvAdapter(private val plugin: VoiceBridgePlugin) : AddonInitializer {
 
         val source = outboundSources.computeIfAbsent(senderUuid) { _ ->
             val mcEntity = voiceServer.minecraftServer.getPlayerByInstance(senderPlayer)
-            line.createEntitySource(mcEntity, false)
+            line.createEntitySource(mcEntity, false).apply {
+                // Exclude dual-mod players — they already hear SVC audio natively
+                addFilter<VoicePlayer> { player -> !plugin.sessionManager.isDualMod(player.instance.uuid) }
+            }
         }
 
         val seq = sequenceNumbers.compute(senderUuid) { _, current ->
@@ -217,6 +221,7 @@ class PvAdapter(private val plugin: VoiceBridgePlugin) : AddonInitializer {
             voiceServer.defaultEncryption.encrypt(opusData)
         } catch (e: EncryptionException) {
             logger.fine("Failed to encrypt audio for PV: ${e.message}")
+            BridgeMetrics.droppedFrames.incrementAndGet()
             return false
         }
 
@@ -229,6 +234,19 @@ class PvAdapter(private val plugin: VoiceBridgePlugin) : AddonInitializer {
     fun sendAudioEnd(senderUuid: UUID, distance: Short) {
         val seq = sequenceNumbers[senderUuid] ?: return
         outboundSources[senderUuid]?.sendAudioEnd(seq, distance)
+    }
+
+    /**
+     * Clean up the outbound PV source for a player (e.g., when an SVC player disconnects).
+     * Sends audio end signal and removes the source.
+     */
+    fun cleanupSource(senderUuid: UUID) {
+        val seq = sequenceNumbers.remove(senderUuid) ?: return
+        outboundSources.remove(senderUuid)?.let { source ->
+            source.sendAudioEnd(seq, 0)
+            source.remove()
+            logger.fine("Cleaned up PV source for player $senderUuid")
+        }
     }
 
     fun shutdown() {

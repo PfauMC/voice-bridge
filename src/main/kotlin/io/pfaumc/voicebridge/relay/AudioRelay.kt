@@ -4,11 +4,10 @@ import io.pfaumc.voicebridge.BridgeMetrics
 import io.pfaumc.voicebridge.adapter.PvAdapter
 import io.pfaumc.voicebridge.adapter.SvcAdapter
 import io.pfaumc.voicebridge.config.BridgeConfig
-import io.pfaumc.voicebridge.session.ModType
 import io.pfaumc.voicebridge.session.SessionManager
 import io.pfaumc.voicebridge.spatial.SpatialMapper
 import org.bukkit.entity.Player
-import java.util.UUID
+import java.util.*
 import java.util.logging.Logger
 
 /**
@@ -47,6 +46,9 @@ class AudioRelay(
         whispering: Boolean
     ) {
         val pv = pvAdapter ?: return
+
+        // Skip relay for dual-mod players — PV clients already hear them via PV natively
+        if (sessionManager.isDualMod(senderUuid)) return
 
         val effectiveDistance = if (whispering) {
             spatialMapper.whisperDistance(distance.toDouble())
@@ -90,6 +92,9 @@ class AudioRelay(
         distance: Short
     ) {
         val svc = svcAdapter ?: return
+
+        // Skip relay for dual-mod players — SVC clients already hear them via SVC natively
+        if (sessionManager.isDualMod(senderUuid)) return
 
         val svcDistance = spatialMapper.pvToSvcDistance(distance, senderPlayer.world)
 

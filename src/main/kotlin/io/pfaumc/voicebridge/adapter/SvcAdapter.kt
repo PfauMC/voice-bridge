@@ -9,6 +9,7 @@ import de.maxhenkel.voicechat.api.events.EventRegistration
 import de.maxhenkel.voicechat.api.events.MicrophonePacketEvent
 import de.maxhenkel.voicechat.api.events.PlayerConnectedEvent
 import de.maxhenkel.voicechat.api.events.PlayerDisconnectedEvent
+import io.pfaumc.voicebridge.BridgeMetrics
 import io.pfaumc.voicebridge.VoiceBridgePlugin
 import io.pfaumc.voicebridge.session.ModType
 import org.bukkit.Bukkit
@@ -84,14 +85,17 @@ class SvcAdapter(private val plugin: VoiceBridgePlugin) : VoicechatPlugin {
     private fun onPlayerDisconnected(event: PlayerDisconnectedEvent) {
         val playerUuid = event.playerUuid
 
-        // Remove session
-        plugin.sessionManager.unregister(playerUuid)
+        // Remove only the SVC mod type; session is fully removed only when all mod types are gone
+        plugin.sessionManager.unregister(playerUuid, ModType.SIMPLE_VOICE_CHAT)
 
         // Close any outbound channels for this player
         outboundChannels.remove(playerUuid)?.let { channel ->
             channel.flush()
             logger.fine("Closed outbound channel for disconnected SVC player $playerUuid")
         }
+
+        // Signal audio end on PV side for this player's outbound source
+        plugin.audioRelay.pvAdapter?.cleanupSource(playerUuid)
     }
 
     /**
@@ -143,28 +147,28 @@ class SvcAdapter(private val plugin: VoiceBridgePlugin) : VoicechatPlugin {
     ): Boolean {
         val api = serverApi ?: return false
 
-        // Get or create an EntityAudioChannel for this PV speaker
-        val channel = outboundChannels.computeIfAbsent(senderUuid) { uuid ->
+        // Get existing channel or create a new one
+        var channel = outboundChannels[senderUuid]
+        if (channel == null) {
             val entity = api.fromEntity(senderPlayer)
-            val channelId = UUID.nameUUIDFromBytes("voice-bridge-$uuid".toByteArray())
-            val ch = api.createEntityAudioChannel(channelId, entity)
-            if (ch == null) {
-                logger.warning("Failed to create EntityAudioChannel for PV player $uuid")
-                // Return a placeholder that will be replaced on next attempt
+            val channelId = UUID.nameUUIDFromBytes("voice-bridge-$senderUuid".toByteArray())
+            val newChannel = api.createEntityAudioChannel(channelId, entity)
+            if (newChannel == null) {
+                logger.warning("Failed to create EntityAudioChannel for PV player $senderUuid")
+                BridgeMetrics.droppedFrames.incrementAndGet()
+                return false
             }
-            ch!!.apply {
-                setDistance(distance)
+            newChannel.distance = distance
+            // Set filter once at creation — only send to SVC players who are NOT dual-mod
+            newChannel.setFilter { serverPlayer ->
+                val session = plugin.sessionManager.getSession(serverPlayer.uuid)
+                session != null && session.hasModType(ModType.SIMPLE_VOICE_CHAT) && !session.isDualMod()
             }
+            outboundChannels[senderUuid] = newChannel
+            channel = newChannel
         }
 
         channel.distance = distance
-
-        // Only send to players using SVC (filter out PV players)
-        channel.setFilter { serverPlayer ->
-            val uuid = serverPlayer.uuid
-            plugin.sessionManager.getModType(uuid) == ModType.SIMPLE_VOICE_CHAT
-        }
-
         channel.send(opusData)
         return true
     }
