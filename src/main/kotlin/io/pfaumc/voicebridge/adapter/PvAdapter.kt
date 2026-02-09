@@ -7,18 +7,18 @@ import org.bukkit.entity.Player
 import su.plo.voice.api.addon.AddonInitializer
 import su.plo.voice.api.addon.InjectPlasmoVoice
 import su.plo.voice.api.addon.annotation.Addon
+import su.plo.voice.api.encryption.EncryptionException
+import su.plo.voice.api.event.EventSubscribe
 import su.plo.voice.api.server.PlasmoVoiceServer
 import su.plo.voice.api.server.audio.capture.ServerActivation
 import su.plo.voice.api.server.audio.line.ServerSourceLine
-import su.plo.voice.api.server.audio.source.ServerPlayerSource
+import su.plo.voice.api.server.audio.source.ServerEntitySource
 import su.plo.voice.api.server.event.connection.UdpClientConnectEvent
 import su.plo.voice.api.server.event.connection.UdpClientDisconnectedEvent
-import su.plo.voice.api.event.EventSubscribe
 import su.plo.voice.api.server.player.VoicePlayer
-import su.plo.voice.api.server.player.VoiceServerPlayer
-import su.plo.voice.proto.packets.udp.serverbound.PlayerAudioPacket
 import su.plo.voice.proto.packets.tcp.serverbound.PlayerAudioEndPacket
-import java.util.UUID
+import su.plo.voice.proto.packets.udp.serverbound.PlayerAudioPacket
+import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.logging.Logger
 
@@ -33,7 +33,7 @@ import java.util.logging.Logger
  *
  * Audio interception:
  * - Registers a listener on the "proximity" ServerActivation to intercept PV player audio
- * - Creates ServerPlayerSources to relay SVC player audio to PV clients
+ * - Creates ServerEntitySources to relay SVC player audio to PV clients
  */
 @Addon(
     id = "voice-bridge",
@@ -52,9 +52,11 @@ class PvAdapter(private val plugin: VoiceBridgePlugin) : AddonInitializer {
     private var sourceLine: ServerSourceLine? = null
     private var proximityActivation: ServerActivation? = null
 
-    // ServerPlayerSources for relaying SVC player audio to PV clients.
+    // ServerEntitySources for relaying SVC player audio to PV clients.
     // Key: SVC player UUID (the "speaker"), Value: source that PV clients listen to.
-    private val outboundSources = ConcurrentHashMap<UUID, ServerPlayerSource>()
+    // Uses entity sources instead of player sources because SVC-only players
+    // are not connected to PV's UDP server.
+    private val outboundSources = ConcurrentHashMap<UUID, ServerEntitySource>()
 
     // Track sequence numbers per source for outbound audio
     private val sequenceNumbers = ConcurrentHashMap<UUID, Long>()
@@ -158,9 +160,17 @@ class PvAdapter(private val plugin: VoiceBridgePlugin) : AddonInitializer {
 
     private fun onPvPlayerAudio(player: VoicePlayer, packet: PlayerAudioPacket) {
         val playerUuid = player.instance.uuid
-        val opusData = packet.data
         val distance = packet.distance
         val sequenceNumber = packet.sequenceNumber
+
+        // PV audio data is encrypted end-to-end (AES/CBC/PKCS5Padding).
+        // We must decrypt it before relaying raw Opus to SVC.
+        val opusData = try {
+            voiceServer.defaultEncryption.decrypt(packet.data)
+        } catch (e: EncryptionException) {
+            logger.fine("Failed to decrypt PV audio from ${player.instance.name}: ${e.message}")
+            return
+        }
 
         // Touch session
         plugin.sessionManager.getSession(playerUuid)?.touch()
@@ -188,7 +198,10 @@ class PvAdapter(private val plugin: VoiceBridgePlugin) : AddonInitializer {
     // --- Outbound: Send audio FROM an SVC player TO PV clients ---
 
     /**
-     * Send audio from an SVC player to nearby PV clients using ServerPlayerSource.
+     * Send audio from an SVC player to nearby PV clients using ServerEntitySource.
+     *
+     * Uses entity sources instead of player sources because SVC-only players
+     * are not connected to PV's UDP server and cannot use ServerPlayerSource.
      *
      * @return true if audio was sent successfully
      */
@@ -201,30 +214,26 @@ class PvAdapter(private val plugin: VoiceBridgePlugin) : AddonInitializer {
     ): Boolean {
         val line = sourceLine ?: return false
 
-        // Try to get the PV player object for this sender.
-        // If the player only has SVC (not PV), they won't be in PV's player manager.
-        val pvPlayer = voiceServer.playerManager.getPlayerById(senderUuid)
-            .orElse(null)
-
-        if (pvPlayer == null) {
-            // Player not known to PV — we cannot create a ServerPlayerSource for them.
-            // This is expected for SVC-only players.
-            // TODO: Consider using ServerEntitySource or ServerStaticSource as alternative.
-            if (plugin.bridgeConfig.debug) {
-                logger.fine("Cannot relay to PV: player $senderUuid not in PV player manager")
-            }
-            return false
-        }
-
         val source = outboundSources.computeIfAbsent(senderUuid) { _ ->
-            line.createPlayerSource(pvPlayer, false)
+            val mcEntity = voiceServer.minecraftServer.getPlayerByInstance(senderPlayer)
+            line.createEntitySource(mcEntity, false)
         }
 
         val seq = sequenceNumbers.compute(senderUuid) { _, current ->
             if (sequenceNumber > 0) sequenceNumber else (current ?: 0) + 1
         } ?: 0L
 
-        return source.sendAudioFrame(opusData, seq, distance)
+        // PV uses end-to-end encryption (AES/CBC/PKCS5Padding).
+        // Audio from SVC is raw Opus — we must encrypt it before sending
+        // so PV clients can decrypt and decode it.
+        val encryptedData = try {
+            voiceServer.defaultEncryption.encrypt(opusData)
+        } catch (e: EncryptionException) {
+            logger.fine("Failed to encrypt audio for PV: ${e.message}")
+            return false
+        }
+
+        return source.sendAudioFrame(encryptedData, seq, distance)
     }
 
     /**

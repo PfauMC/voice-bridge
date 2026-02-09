@@ -1,13 +1,19 @@
 package io.pfaumc.voicebridge.adapter
 
-import de.maxhenkel.voicechat.api.*
+import de.maxhenkel.voicechat.api.BukkitVoicechatService
+import de.maxhenkel.voicechat.api.VoicechatApi
+import de.maxhenkel.voicechat.api.VoicechatPlugin
+import de.maxhenkel.voicechat.api.VoicechatServerApi
 import de.maxhenkel.voicechat.api.audiochannel.EntityAudioChannel
-import de.maxhenkel.voicechat.api.events.*
+import de.maxhenkel.voicechat.api.events.EventRegistration
+import de.maxhenkel.voicechat.api.events.MicrophonePacketEvent
+import de.maxhenkel.voicechat.api.events.PlayerConnectedEvent
+import de.maxhenkel.voicechat.api.events.PlayerDisconnectedEvent
 import io.pfaumc.voicebridge.VoiceBridgePlugin
 import io.pfaumc.voicebridge.session.ModType
 import org.bukkit.Bukkit
 import org.bukkit.entity.Player
-import java.util.UUID
+import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.logging.Logger
 
@@ -97,6 +103,7 @@ class SvcAdapter(private val plugin: VoiceBridgePlugin) : VoicechatPlugin {
         val senderUuid = senderConnection.player.uuid
         val packet = event.packet
         val opusData = packet.opusEncodedData
+        if (opusData.isEmpty()) return
         val whispering = packet.isWhispering
 
         // Touch session to keep it alive
