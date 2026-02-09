@@ -1,7 +1,5 @@
 plugins {
-    java
     idea
-    alias(libs.plugins.shadow)
     alias(libs.plugins.paper)
     alias(libs.plugins.runpaper)
     alias(libs.plugins.kotlin.jvm)
@@ -41,6 +39,7 @@ dependencies {
     compileOnly("su.plo.slib:api-server:1.2.0")
 
     compileOnly(kotlin("stdlib"))
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
 }
 
 kotlin {

@@ -8,10 +8,9 @@ import io.pfaumc.voicebridge.config.BridgeConfig
 import io.pfaumc.voicebridge.relay.AudioRelay
 import io.pfaumc.voicebridge.session.SessionManager
 import io.pfaumc.voicebridge.spatial.SpatialMapper
+import kotlinx.coroutines.*
 import org.bukkit.plugin.java.JavaPlugin
-import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledExecutorService
-import java.util.concurrent.TimeUnit
+import kotlin.time.Duration.Companion.seconds
 
 class VoiceBridgePlugin : JavaPlugin() {
 
@@ -27,13 +26,12 @@ class VoiceBridgePlugin : JavaPlugin() {
     private var svcAdapter: SvcAdapter? = null
     private var pvAdapter: PvAdapter? = null
 
-    private lateinit var scheduler: ScheduledExecutorService
+    private val scope = CoroutineScope(
+        SupervisorJob() + CoroutineName("VoiceBridge")
+    )
 
     override fun onEnable() {
         instance = this
-        scheduler = Executors.newSingleThreadScheduledExecutor { r ->
-            Thread(r, "VoiceBridge-Cleanup").apply { isDaemon = true }
-        }
 
         // Load config
         bridgeConfig = BridgeConfig.load(dataFolder)
@@ -68,11 +66,13 @@ class VoiceBridgePlugin : JavaPlugin() {
         audioRelay.svcAdapter = svcAdapter
         audioRelay.pvAdapter = pvAdapter
 
-        // Start cleanup scheduler
-        scheduler.scheduleAtFixedRate(
-            { sessionManager.cleanup() },
-            5, 5, TimeUnit.SECONDS
-        )
+        // Start cleanup coroutine
+        scope.launch {
+            while (isActive) {
+                delay(5.seconds)
+                sessionManager.cleanup()
+            }
+        }
 
         // Register commands via Brigadier
         registerCommands()
@@ -85,9 +85,7 @@ class VoiceBridgePlugin : JavaPlugin() {
         svcAdapter?.shutdown()
         pvAdapter?.shutdown()
         sessionManager.clear()
-        if (::scheduler.isInitialized) {
-            scheduler.shutdownNow()
-        }
+        scope.cancel()
         logger.info("Voice Bridge disabled")
     }
 
