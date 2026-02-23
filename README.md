@@ -26,7 +26,7 @@ PV Player  ──► PV API  ──► Voice Bridge ──► SVC API ──► 
 ## Installation
 
 1. Install both Simple Voice Chat and Plasmo Voice on your Paper server
-2. Download `voice-bridge-<version>.jar` from [Releases](../../releases)
+2. Download `voice-bridge-<version>.jar` from [Modrinth](https://modrinth.com/plugin/voice-bridge)
 3. Place it in your server's `plugins/` directory
 4. Restart the server
 
