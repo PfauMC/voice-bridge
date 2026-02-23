@@ -83,9 +83,6 @@ class PvAdapter(private val plugin: VoiceBridgePlugin) : AddonInitializer {
     override fun onAddonInitialize() {
         logger.info("PV addon initializing — PlasmoVoiceServer injected")
 
-        // Register event listeners for player connect/disconnect
-        voiceServer.eventBus.register(this, this)
-
         // Get the proximity source line for creating player sources
         sourceLine = voiceServer.sourceLineManager.getLineByName("proximity").orElse(null)
         if (sourceLine == null) {

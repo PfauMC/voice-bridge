@@ -3,6 +3,7 @@ plugins {
     alias(libs.plugins.paper)
     alias(libs.plugins.runpaper)
     alias(libs.plugins.kotlin.jvm)
+    alias(libs.plugins.shadow)
 }
 
 group = project.properties["plugin.group"].toString()
@@ -39,7 +40,8 @@ dependencies {
     compileOnly("su.plo.slib:api-server:1.2.0")
 
     compileOnly(kotlin("stdlib"))
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
+    compileOnly("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
+    implementation("org.bstats:bstats-bukkit:3.1.0")
 }
 
 kotlin {
@@ -49,6 +51,15 @@ kotlin {
 tasks {
     assemble {
         dependsOn(reobfJar)
+    }
+
+    shadowJar {
+        relocate("org.bstats", "io.pfaumc.voicebridge.lib.bstats")
+        minimize()
+    }
+
+    reobfJar {
+        inputJar = shadowJar.flatMap { it.archiveFile }
     }
 
     processResources {

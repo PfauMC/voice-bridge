@@ -6,9 +6,13 @@ import io.pfaumc.voicebridge.adapter.SvcAdapter
 import io.pfaumc.voicebridge.command.VoiceBridgeCommand
 import io.pfaumc.voicebridge.config.BridgeConfig
 import io.pfaumc.voicebridge.relay.AudioRelay
+import io.pfaumc.voicebridge.session.ModType
 import io.pfaumc.voicebridge.session.SessionManager
 import io.pfaumc.voicebridge.spatial.SpatialMapper
 import kotlinx.coroutines.*
+import org.bstats.bukkit.Metrics
+import org.bstats.charts.SimplePie
+import org.bstats.charts.SingleLineChart
 import org.bukkit.plugin.java.JavaPlugin
 import kotlin.time.Duration.Companion.seconds
 
@@ -21,6 +25,8 @@ class VoiceBridgePlugin : JavaPlugin() {
     lateinit var spatialMapper: SpatialMapper
         private set
     lateinit var audioRelay: AudioRelay
+        private set
+    lateinit var metrics: Metrics
         private set
 
     private var svcAdapter: SvcAdapter? = null
@@ -81,6 +87,9 @@ class VoiceBridgePlugin : JavaPlugin() {
         // Register commands via Brigadier
         registerCommands()
 
+        // Register bStats custom charts
+        setupMetrics()
+
         logger.info("Voice Bridge enabled — bridging Simple Voice Chat <-> Plasmo Voice")
         BridgeMetrics.log(logger)
     }
@@ -99,7 +108,32 @@ class VoiceBridgePlugin : JavaPlugin() {
         logger.info("Voice Bridge config reloaded")
     }
 
-    @Suppress("UnstableApiUsage")
+    private fun setupMetrics() {
+        metrics = Metrics(this, 29717)
+
+        // Player counts
+        metrics.addCustomChart(SingleLineChart("svc_players") {
+            sessionManager.getSessionsByMod(ModType.SIMPLE_VOICE_CHAT).size
+        })
+        metrics.addCustomChart(SingleLineChart("pv_players") {
+            sessionManager.getSessionsByMod(ModType.PLASMO_VOICE).size
+        })
+        metrics.addCustomChart(SingleLineChart("dual_mod_players") {
+            sessionManager.getAllSessions().count { it.isDualMod() }
+        })
+        metrics.addCustomChart(SingleLineChart("bridged_sessions") {
+            BridgeMetrics.activeSessions.get()
+        })
+
+        // Config values
+        metrics.addCustomChart(SimplePie("default_distance") {
+            bridgeConfig.defaultDistance.toString()
+        })
+        metrics.addCustomChart(SimplePie("passthrough_mode") {
+            if (bridgeConfig.passthrough) "passthrough" else "transcode"
+        })
+    }
+
     private fun registerCommands() {
         lifecycleManager.registerEventHandler(LifecycleEvents.COMMANDS) { event ->
             event.registrar().register(

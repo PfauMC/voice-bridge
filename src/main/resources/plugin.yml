@@ -2,6 +2,8 @@ name: $name
 version: $version
 main: $main
 api-version: "$apiVersion"
+author: andreypfau
+website: https://modrinth.com/plugin/voice-bridge
 description: Bridges voice communication between Simple Voice Chat and Plasmo Voice
 load: POSTWORLD
 folia-supported: true
