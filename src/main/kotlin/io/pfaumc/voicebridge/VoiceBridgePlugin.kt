@@ -11,6 +11,7 @@ import io.pfaumc.voicebridge.session.SessionManager
 import io.pfaumc.voicebridge.spatial.SpatialMapper
 import kotlinx.coroutines.*
 import org.bstats.bukkit.Metrics
+import org.bstats.charts.AdvancedPie
 import org.bstats.charts.SimplePie
 import org.bstats.charts.SingleLineChart
 import org.bukkit.plugin.java.JavaPlugin
@@ -120,6 +121,19 @@ class VoiceBridgePlugin : JavaPlugin() {
         })
         metrics.addCustomChart(SingleLineChart("dual_mod_players") {
             sessionManager.getAllSessions().count { it.isDualMod() }
+        })
+
+        // Distribution of connected players across the two mods.
+        // Dual-mod players are counted once in "Both mods" to avoid double counting.
+        metrics.addCustomChart(AdvancedPie("voice_mod_distribution") {
+            val dual = sessionManager.getAllSessions().count { it.isDualMod() }
+            val svcOnly = sessionManager.getSessionsByMod(ModType.SIMPLE_VOICE_CHAT).size - dual
+            val pvOnly = sessionManager.getSessionsByMod(ModType.PLASMO_VOICE).size - dual
+            mutableMapOf(
+                "Simple Voice Chat" to svcOnly,
+                "Plasmo Voice" to pvOnly,
+                "Both mods" to dual
+            )
         })
         metrics.addCustomChart(SingleLineChart("bridged_sessions") {
             BridgeMetrics.activeSessions.get()

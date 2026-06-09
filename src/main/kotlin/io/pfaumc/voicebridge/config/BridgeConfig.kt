@@ -12,6 +12,8 @@ data class BridgeConfig(
     val maxDistance: Double = 128.0,
     val passthrough: Boolean = true,
     val forceTranscode: Boolean = false,
+    val repacing: Boolean = true,
+    val repacingJitterFrames: Int = 2,
     val worldOverrides: Map<String, Double> = emptyMap()
 ) {
     companion object {
@@ -45,6 +47,8 @@ data class BridgeConfig(
                 maxDistance = yaml.getDouble("proximity.max-distance", 128.0),
                 passthrough = yaml.getBoolean("audio.passthrough", true),
                 forceTranscode = yaml.getBoolean("audio.force-transcode", false),
+                repacing = yaml.getBoolean("audio.repacing", true),
+                repacingJitterFrames = yaml.getInt("audio.jitter-frames", 2),
                 worldOverrides = worldOverrides
             )
         }
@@ -68,6 +72,13 @@ data class BridgeConfig(
               passthrough: true
               # Force decode and re-encode all frames (higher CPU, use only if codec mismatch)
               force-transcode: false
+              # Smooth out bursty Simple Voice Chat frame delivery before forwarding to Plasmo
+              # Voice. Holds a small lead of frames per speaker and releases them at a steady 20ms
+              # cadence so PV clients don't underflow their jitter buffer and crackle.
+              repacing: true
+              # Frames to pre-buffer before draining (each frame is 20ms). Higher = smoother under
+              # jitter but more latency. 2 = ~40ms added.
+              jitter-frames: 2
 
             # Per-world distance overrides (optional)
             # worlds:

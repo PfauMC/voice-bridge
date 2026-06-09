@@ -55,6 +55,9 @@ class PvAdapter(private val plugin: VoiceBridgePlugin) : AddonInitializer {
     private var sourceLine: ServerSourceLine? = null
     private var proximityActivation: ServerActivation? = null
 
+    // Re-paces bursty SVC frames into a steady 20ms cadence before sending to PV clients.
+    private var repacer: FrameRepacer? = null
+
     // ServerEntitySources for relaying SVC player audio to PV clients.
     // Key: SVC player UUID (the "speaker"), Value: source that PV clients listen to.
     // Uses entity sources instead of player sources because SVC-only players
@@ -95,6 +98,18 @@ class PvAdapter(private val plugin: VoiceBridgePlugin) : AddonInitializer {
             .orElse(null)
         if (proximityActivation == null) {
             logger.warning("Proximity activation not found — PV→SVC bridge may not work")
+        }
+
+        val cfg = plugin.bridgeConfig
+        if (cfg.repacing) {
+            val lead = cfg.repacingJitterFrames.coerceAtLeast(1)
+            repacer = FrameRepacer(
+                frameIntervalMs = FRAME_INTERVAL_MS,
+                leadFrames = lead,
+                maxFrames = lead + MAX_EXTRA_FRAMES,
+                sink = ::emitFrame
+            ).also { it.start() }
+            logger.info("SVC->PV frame re-pacing enabled (lead=$lead frames, ${FRAME_INTERVAL_MS}ms cadence)")
         }
 
         logger.info("PV adapter initialized, listening for activation events")
@@ -141,6 +156,7 @@ class PvAdapter(private val plugin: VoiceBridgePlugin) : AddonInitializer {
         // Clean up outbound sources
         outboundSources.remove(playerUuid)?.remove()
         sequenceNumbers.remove(playerUuid)
+        repacer?.remove(playerUuid)
 
         // Clean up outbound SVC channels for this player
         plugin.audioRelay.svcAdapter?.removeChannel(playerUuid)
@@ -218,7 +234,7 @@ class PvAdapter(private val plugin: VoiceBridgePlugin) : AddonInitializer {
     ): Boolean {
         val line = sourceLine ?: return false
 
-        val source = outboundSources.computeIfAbsent(senderUuid) { _ ->
+        outboundSources.computeIfAbsent(senderUuid) { _ ->
             val mcEntity = voiceServer.minecraftServer.getPlayerByInstance(senderPlayer)
             line.createEntitySource(mcEntity, false).apply {
                 // Exclude dual-mod players — they already hear SVC audio natively
@@ -226,9 +242,27 @@ class PvAdapter(private val plugin: VoiceBridgePlugin) : AddonInitializer {
             }
         }
 
-        val seq = sequenceNumbers.compute(senderUuid) { _, current ->
-            if (sequenceNumber > 0) sequenceNumber else (current ?: 0) + 1
-        } ?: 0L
+        val pacer = repacer
+        if (pacer != null) {
+            pacer.enqueue(senderUuid, opusData, distance)
+        } else {
+            emitFrame(senderUuid, opusData, distance)
+        }
+        return true
+    }
+
+    /**
+     * Encrypt and send a single Opus frame to PV clients for the given speaker.
+     *
+     * The sequence number is assigned here (monotonic +1 per source) rather than carried from the
+     * caller, so it stays contiguous with frames actually sent — PV's client-side packet-loss
+     * compensation requires contiguous sequence numbers. When re-pacing is enabled this runs on the
+     * pacer thread; otherwise it runs inline on the caller's thread.
+     */
+    private fun emitFrame(senderUuid: UUID, opusData: ByteArray, distance: Short) {
+        val source = outboundSources[senderUuid] ?: return
+
+        val seq = sequenceNumbers.merge(senderUuid, 1L) { current, _ -> current + 1 } ?: 1L
 
         // PV uses end-to-end encryption (AES/CBC/PKCS5Padding).
         // Audio from SVC is raw Opus — we must encrypt it before sending
@@ -238,10 +272,10 @@ class PvAdapter(private val plugin: VoiceBridgePlugin) : AddonInitializer {
         } catch (e: EncryptionException) {
             logger.fine("Failed to encrypt audio for PV: ${e.message}")
             BridgeMetrics.droppedFrames.incrementAndGet()
-            return false
+            return
         }
 
-        return source.sendAudioFrame(encryptedData, seq, distance)
+        source.sendAudioFrame(encryptedData, seq, distance)
     }
 
     /**
@@ -257,6 +291,7 @@ class PvAdapter(private val plugin: VoiceBridgePlugin) : AddonInitializer {
      * Sends audio end signal and removes the source.
      */
     fun cleanupSource(senderUuid: UUID) {
+        repacer?.remove(senderUuid)
         val seq = sequenceNumbers.remove(senderUuid) ?: return
         outboundSources.remove(senderUuid)?.let { source ->
             source.sendAudioEnd(seq, 0)
@@ -299,6 +334,9 @@ class PvAdapter(private val plugin: VoiceBridgePlugin) : AddonInitializer {
     }
 
     fun shutdown() {
+        repacer?.shutdown()
+        repacer = null
+
         // Clean up any remaining bridged connections
         for (uuid in bridgedConnectionUuids) {
             try {
@@ -313,5 +351,12 @@ class PvAdapter(private val plugin: VoiceBridgePlugin) : AddonInitializer {
         outboundSources.clear()
         sequenceNumbers.clear()
         logger.info("PV adapter shut down")
+    }
+
+    companion object {
+        // Both mods use 20ms Opus frames (960 samples @ 48kHz).
+        private const val FRAME_INTERVAL_MS = 20L
+        // Headroom above the lead before the pacer drops the oldest frame (bounds latency under drift).
+        private const val MAX_EXTRA_FRAMES = 10
     }
 }
